@@ -134,5 +134,5 @@ def get(agent_id):
 
 
 def list_agents():
-    return [{"id": a.id, "project": a.project, "cwd": a.cwd, "status": a.status,
-             "type": "agent"} for a in AGENTS.values()]
+    return [{"id": a.id, "full": a.id, "project": a.project, "cwd": a.cwd,
+             "status": a.status, "type": "agent"} for a in AGENTS.values()]

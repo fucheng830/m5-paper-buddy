@@ -103,6 +103,19 @@ python tools/claude_code_bridge.py --web --budget 200000
 
 ---
 
+## 🤖 Agent Chat 模式（--web）
+
+不插墨水屏，手机/浏览器直接 chat 驱动 claude：
+
+1. `python tools/claude_code_bridge.py --web --budget 200000`
+2. 浏览器打开 `http://<本机IP>:9876/`
+3. 点 "＋ Agent" 选项目目录 → 发消息 → 流式回复 + 工具调用卡片
+4. agent 处理中可继续追加消息（streaming input）
+
+同时保留多终端 session 监控（仪表盘 TERM/AGENT 共存）。设计详见 `docs/superpowers/specs/2026-06-22-m5-agent-chat-stream-json-design.md`，协议见 `docs/stream-json-protocol.md`。
+
+---
+
 ## ⌨️ 控制
 
 | 按键 / 区域 | Dashboard 状态页 | 审批卡片 |

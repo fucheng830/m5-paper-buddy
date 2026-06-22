@@ -6,3 +6,8 @@
 # tracked and only ignore scratch subfolders.
 data/characters/
 data/.tmp/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
