@@ -27,6 +27,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .sidebar-header .conn{font-size:11px;font-weight:400;padding:2px 8px;border-radius:10px}
 .sidebar-header .conn.on{background:var(--bg-done);color:#2e7d32}
 .sidebar-header .conn.off{background:var(--bg-waiting);color:#c62828}
+.new-agent-btn{font-size:12px;font-weight:600;border:1px solid var(--accent);background:transparent;
+  color:var(--accent);padding:3px 10px;border-radius:12px;cursor:pointer;white-space:nowrap;
+  margin-left:auto;flex-shrink:0;transition:background .15s}
+.new-agent-btn:active{background:var(--accent);color:#fff}
 .session-list{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .session-item{padding:12px 16px;border-bottom:1px solid #eee;cursor:pointer;transition:background .15s}
 .session-item:active{background:#eee}
@@ -39,6 +43,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .s-badge.done{background:var(--bg-done);color:#2e7d32}
 .s-badge.waiting{background:var(--bg-waiting);color:#c62828;animation:pulse 1.5s infinite}
 .s-badge.idle{background:#eee;color:var(--ink-dim)}
+.s-type{font-size:9px;padding:1px 5px;border-radius:3px;margin-left:6px}
+.s-type.agent{background:#e3f2fd;color:#0055aa}
+.s-type.term{background:#eee;color:#888}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 .session-item .s-latest{font-size:12px;color:var(--ink-dim);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;margin-top:3px;font-family:'SF Mono',SFMono-Regular,Menlo,monospace}
@@ -157,6 +164,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span id="title-text">Claude Buddy</span>
+      <button class="new-agent-btn" onclick="newAgentSession()">＋ Agent</button>
       <span class="conn off" id="conn-status">CONNECTING</span>
     </div>
     <div class="conn-banner" id="conn-banner">DISCONNECTED</div>
@@ -340,10 +348,11 @@ function renderSidebar(){
     const pct=s.tokens&&budget?Math.min(100,Math.round(s.tokens/budget*100)):0;
     const badge=s.status==='waiting'?'waiting':s.status==='working'?'working':isJustDone?'done':'idle';
     const badgeText=s.status==='waiting'?'ASK':s.status==='working'?'ACTIVE':isJustDone?'DONE':'idle';
+    const typeTag=s.type==='agent'?'<span class="s-type agent">AGENT</span>':'<span class="s-type term">TERM</span>';
     return`<div class="session-item${cls}" onclick="selectSession('${esc(sid)}')">
       <div class="s-top">
-        <span class="s-proj">${esc(s.proj||sid.slice(0,8))}</span>
-        <span class="s-badge ${badge}">${badgeText}</span>
+        <span class="s-proj">${esc(s.proj||s.project||s.id||sid.slice(0,8))}</span>
+        <span class="s-badge ${badge}">${badgeText}</span>${typeTag}
       </div>
       <div class="s-latest">${esc(s.latest||'(no output yet)')}</div>
       ${(s.tokens||s.model||s.stopped_at)?`<div class="s-bottom">
@@ -366,6 +375,29 @@ function renderDetail(){
     noDetail.style.display='flex';
     document.getElementById('send-btn').disabled=true;
     chat.querySelectorAll('.msg').forEach(m=>m.remove());
+    return;
+  }
+
+  // Agent sessions render their own chat (streaming + tool cards),
+  // bypassing the terminal transcript logic below.
+  if(s.type==='agent'){
+    header.style.display='flex';
+    document.getElementById('d-proj').textContent=s.project||s.proj||s.id;
+    document.getElementById('d-model').textContent='agent';
+    document.getElementById('d-bar').style.display='none';
+    document.getElementById('d-tokens').textContent=s.status?('status: '+esc(s.status)):'';
+    renderAgentChat();
+    const isAgentRunning=s.status==='working';
+    const sendBtn=document.getElementById('send-btn');
+    sendBtn.disabled=!state.connected||isAgentRunning;
+    const inputEl=document.getElementById('input');
+    if(isAgentRunning){
+      inputEl.placeholder='Agent running...';
+      inputEl.disabled=true;
+    }else{
+      inputEl.placeholder='Message the agent...';
+      inputEl.disabled=false;
+    }
     return;
   }
 
@@ -418,6 +450,27 @@ function renderDetail(){
   }
 }
 
+function _hm(){return new Date().toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'});}
+
+function renderAgentChat(){
+  const chat=document.getElementById('chat');
+  const noDetail=document.getElementById('no-detail');
+  noDetail.style.display='none';
+  const msgs=(state.agentChats&&state.agentChats[state.selectedSid])||[];
+  if(!msgs.length){
+    chat.innerHTML='<div class="no-detail" style="display:flex"><div>Agent ready — type a prompt below</div></div>';
+    return;
+  }
+  chat.innerHTML=msgs.map(m=>{
+    if(m.role==='tool')return `<div class="msg system"><div class="bubble">🔧 <b>${esc(m.tool||'tool')}</b><pre>${esc(JSON.stringify(m.input,null,2))}</pre></div></div>`;
+    if(m.role==='tool_result')return `<div class="msg system"><div class="bubble">↳ <pre>${esc((m.text||'').slice(0,500))}</pre></div></div>`;
+    if(m.role==='system')return `<div class="msg system"><div class="bubble">${esc(m.text||'')}</div>${m.time?`<div class="msg-time">${esc(m.time)}</div>`:''}</div>`;
+    const c=m.role==='assistant'?md(m.text):esc(m.text);
+    return `<div class="msg ${m.role}"><div class="bubble">${c}</div>${m.time?`<div class="msg-time">${esc(m.time)}</div>`:''}</div>`;
+  }).join('');
+  chat.scrollTop=chat.scrollHeight;
+}
+
 function renderQuestion(){
   const p=state.prompt;
   const overlay=document.getElementById('question-overlay');
@@ -437,7 +490,12 @@ function renderQuestion(){
 // --- Actions ---
 function selectSession(sid){
   state.selectedSid=sid;
-  sendCmd({cmd:'focus_session',sid:state.sessions[sid]?.full||sid});
+  const s=state.sessions[sid];
+  // Only terminal sessions use focus_session / transcript injection.
+  // Agent sessions are driven entirely by agent_event stream.
+  if(!s||s.type!=='agent'){
+    sendCmd({cmd:'focus_session',sid:s?.full||sid});
+  }
   if(window.innerWidth<=700){
     document.getElementById('sidebar').classList.add('hidden');
     document.getElementById('detail').classList.add('active');
@@ -460,16 +518,30 @@ function onOption(i){
   setTimeout(()=>render(),800);
 }
 
+function newAgentSession(){
+  const cwd=prompt('项目目录(绝对路径):','');
+  if(!cwd)return;
+  sendCmd({cmd:'agent_new',cwd,project:cwd.split(/[\\/]/).pop()});
+}
+
 function sendPrompt(){
   const ta=document.getElementById('input');
   const text=ta.value.trim();
   if(!text||!state.connected)return;
   const s=state.sessions[state.selectedSid];
-  if(!s)return;
-  sendCmd({cmd:'prompt',text:text,sid:s.full});
+  if(s&&s.type==='agent'){
+    const aid=s.full||s.id||state.selectedSid;
+    sendCmd({cmd:'agent_msg',agent_id:aid,text});
+    if(!state.agentChats)state.agentChats={};
+    (state.agentChats[state.selectedSid]=state.agentChats[state.selectedSid]||[]).push({role:'user',text,time:_hm()});
+    renderAgentChat();
+  }else{
+    if(!s)return;
+    sendCmd({cmd:'prompt',text:text,sid:s.full});
+    state.transcript.push({role:'user',text:text,time:_hm()});
+    render();
+  }
   ta.value='';autoResize();
-  state.transcript.push({role:'user',text:text,time:new Date().toLocaleTimeString('en',{hour:'2-digit',minute:'2-digit'})});
-  render();
 }
 
 const ta=document.getElementById('input');
@@ -505,11 +577,69 @@ function applyMsg(obj){
     document.getElementById('title-text').textContent=obj.name+"'s Buddy";
     return;
   }
+  if(obj.type==='agent_event'){
+    const sid=obj.agent_id;
+    if(!state.agentChats)state.agentChats={};
+    if(!state.agentChats[sid])state.agentChats[sid]=[];
+    const chat=state.agentChats[sid];
+    const k=obj.kind;
+    if(k==='text'){
+      // stream_json emits one 'text' event per complete assistant text block
+      // (each stdout line is a fully-formed message, NOT a delta). So each
+      // text event is its own assistant message — do NOT accumulate.
+      // The 'streaming' flag just lets renderAgentChat flag the tail until 'done'.
+      const last=chat[chat.length-1];
+      if(last&&last.role==='assistant'&&last.streaming){
+        last.text=obj.text;
+      }else{
+        chat.push({role:'assistant',text:obj.text,streaming:true,time:_hm()});
+      }
+      // Mirror streaming text + running status into the session so the
+      // sidebar preview and badge update (list_agents has no 'latest').
+      const sess=state.sessions[sid];
+      if(sess){
+        sess.latest=(chat[chat.length-1].text||'').slice(0,100);
+        sess.status='working';
+      }
+    }else if(k==='tool_use'){
+      chat.push({role:'tool',tool:obj.tool,input:obj.input,time:_hm()});
+    }else if(k==='tool_result'){
+      chat.push({role:'tool_result',text:obj.text,time:_hm()});
+    }else if(k==='done'){
+      const last=chat[chat.length-1];
+      if(last&&last.streaming)last.streaming=false;
+      const sess=state.sessions[sid];
+      if(sess)sess.status='done';
+    }else if(k==='error'||k==='stderr'){
+      chat.push({role:'system',text:(k==='error'?'ERROR: ':'')+obj.text,time:_hm()});
+    }
+    if(sid===state.selectedSid)renderAgentChat();
+    return;
+  }
+  if(obj.type==='agent_list'){
+    for(const a of(obj.agents||[])){
+      const aid=a.id||a.full;
+      if(!aid)continue;
+      const existing=state.sessions[aid]||{};
+      state.sessions[aid]={...existing,...a,full:existing.full||a.full||aid,id:aid};
+    }
+    render();
+    return;
+  }
   if('time' in obj&&!('total' in obj))return;
   if('total' in obj && obj.sessions){
-    for(const s of obj.sessions)state.sessions[s.full]=s;
+    for(const s of obj.sessions){
+      const sid=s.full||s.id;
+      if(!sid)continue;
+      const existing=state.sessions[sid]||{};
+      // Preserve agentChats-driven 'latest' preview for agent sessions that
+      // the heartbeat (list_agents) doesn't repopulate.
+      const prevAgentLatest=existing.type==='agent'?existing.latest:'';
+      state.sessions[sid]={...existing,...s,full:existing.full||sid,id:s.id||sid};
+      if(!state.sessions[sid].latest&&prevAgentLatest)state.sessions[sid].latest=prevAgentLatest;
+    }
     if(!state.selectedSid||!state.sessions[state.selectedSid])
-      if(obj.sessions.length)state.selectedSid=obj.sessions[0].full;
+      if(obj.sessions.length)state.selectedSid=(obj.sessions[0].full||obj.sessions[0].id);
   }
   if(obj.session_detail && obj.session_detail.sid===state.selectedSid)
     state.transcript=obj.session_detail.transcript||[];
