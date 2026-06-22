@@ -48,6 +48,8 @@ from collections import deque
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import agent_manager   # same-dir import (tools/ is not a package)
+
 # Nordic UART Service UUIDs — match the firmware's ble_bridge.cpp.
 NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"   # central → device (write)
@@ -84,6 +86,8 @@ BUMP_EVENT          = threading.Event()
 WS_CLIENTS  = []           # list of {"send_queue": queue.Queue}
 WS_LOCK     = threading.Lock()
 WS_ACTIVE_SOCKETS = set()  # sockets owned by WS threads — server must not close
+
+AGENT_LOOP = None          # the asyncio loop running agent_manager coroutines (own thread)
 
 SERVED_HTML = ""           # loaded from web_buddy.html at startup
 
@@ -347,6 +351,22 @@ def on_json_obj(obj: dict):
         sid = obj.get("sid", "")
         if text and sid:
             threading.Thread(target=_send_prompt, args=(sid, text), daemon=True).start()
+    elif cmd == "agent_new":
+        cwd = obj.get("cwd", "")
+        project = obj.get("project", "") or os.path.basename(cwd.rstrip("/\\"))
+        if not cwd or not os.path.isdir(cwd) or not AGENT_LOOP:
+            return
+        fut = asyncio.run_coroutine_threadsafe(
+            agent_manager.spawn_agent(cwd, project, _on_agent_event), AGENT_LOOP)
+        fut.result(timeout=30)
+    elif cmd == "agent_msg":
+        a = agent_manager.get(obj.get("agent_id", ""))
+        if a and AGENT_LOOP:
+            asyncio.run_coroutine_threadsafe(a.send(obj.get("text", "")), AGENT_LOOP)
+    elif cmd == "agent_stop":
+        a = agent_manager.get(obj.get("agent_id", ""))
+        if a and AGENT_LOOP:
+            asyncio.run_coroutine_threadsafe(a.stop(), AGENT_LOOP)
 
 
 def _send_session_detail(sid: str):
@@ -485,6 +505,37 @@ def send_line(obj: dict):
                 dead.append(i)
         for i in reversed(dead):
             WS_CLIENTS.pop(i)
+
+
+def _broadcast_ws(obj: dict):
+    """Broadcast an object to all WS clients only (skips the hardware TRANSPORT).
+
+    WS_CLIENTS[].send_q is an asyncio.Queue owned by the WS server loop, but the
+    existing send_line/_send_session_detail already drain it from thread context
+    under WS_LOCK using put_nowait (safe under CPython's GIL for this single-writer
+    deque). We mirror that exact mechanism so agent events broadcast identically.
+    """
+    text = (json.dumps(obj, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+    data = text.decode("utf-8", errors="replace")
+    with WS_LOCK:
+        dead = []
+        for i, client in enumerate(WS_CLIENTS):
+            try:
+                client["send_q"].put_nowait(data)
+            except Exception:
+                dead.append(i)
+        for i in reversed(dead):
+            WS_CLIENTS.pop(i)
+
+
+async def _on_agent_event(agent_id, event):
+    """Called by agent_manager inside AGENT_LOOP. Broadcast to WS clients only.
+
+    Runs in AGENT_LOOP (a different thread/loop than the WS server). WS_CLIENTS
+    broadcast uses the same put_nowait-under-WS_LOCK path as send_line.
+    """
+    _broadcast_ws({"type": "agent_event", "agent_id": agent_id, **event})
+    _broadcast_ws({"type": "agent_list", "agents": agent_manager.list_agents()})
 
 
 # -----------------------------------------------------------------------------
@@ -662,6 +713,7 @@ def build_heartbeat() -> dict:
                 "stopped_at": stopped,
                 "focused":    sid == FOCUSED_SID,
             })
+        sessions_list.extend(agent_manager.list_agents())
         if sessions_list:
             hb["sessions"] = sessions_list
         if BUDGET_LIMIT > 0:   hb["budget"] = BUDGET_LIMIT
@@ -1298,6 +1350,16 @@ def main():
     # Start WebSocket server on a separate port for web buddy
     ws_port = args.http_port + 1
     if args.web:
+        # Dedicated asyncio loop (own daemon thread) for agent_manager coroutines.
+        # WS commands route agent_* calls into this loop via run_coroutine_threadsafe.
+        def _agent_loop_thread():
+            global AGENT_LOOP
+            if sys.platform == "win32":
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            AGENT_LOOP = asyncio.new_event_loop()
+            asyncio.set_event_loop(AGENT_LOOP)
+            AGENT_LOOP.run_forever()
+        threading.Thread(target=_agent_loop_thread, daemon=True).start()
         threading.Thread(target=_start_ws_server, args=(ws_port,), daemon=True).start()
         # Show local IPs for convenience
         try:

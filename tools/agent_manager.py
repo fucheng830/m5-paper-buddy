@@ -30,6 +30,7 @@ class Agent:
         self.proc = None
         self.status = "starting"
         self.reader = None
+        self.stderr_reader = None
         self.created_at = time.time()
 
     async def start(self):
@@ -52,6 +53,27 @@ class Agent:
         )
         self.status = "streaming"
         self.reader = asyncio.create_task(self._read_loop())
+        # Drain stderr so a chatty claude binary can't fill the OS pipe and
+        # block the process. Anything captured is surfaced as an error event
+        # (kept short) rather than dropped, so the dashboard still shows it.
+        self.stderr_reader = asyncio.create_task(self._drain_stderr())
+
+    async def _drain_stderr(self):
+        if not self.proc or not self.proc.stderr:
+            return
+        try:
+            while True:
+                line = await self.proc.stderr.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").strip()
+                if text:
+                    await self.on_event(self.id, {"kind": "stderr", "text": text[:500]})
+        except Exception as e:
+            try:
+                await self.on_event(self.id, {"kind": "error", "text": f"stderr reader: {e}"})
+            except Exception:
+                pass
 
     async def _read_loop(self):
         assert self.proc and self.proc.stdout
@@ -90,6 +112,8 @@ class Agent:
         self.status = "stopped"
         if self.reader:
             self.reader.cancel()
+        if self.stderr_reader:
+            self.stderr_reader.cancel()
         if self.proc:
             try:
                 self.proc.terminate()
